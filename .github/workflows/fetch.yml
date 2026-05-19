@@ -1,0 +1,94 @@
+name: Fetch Stock Data
+
+# Triggered via the GitHub REST API — no Mac required, works from any network.
+#
+# POST https://api.github.com/repos/FUCKUWURST/yfinance-fetcher/actions/workflows/fetch.yml/dispatches
+# Headers: Authorization: Bearer <PAT>  |  Accept: application/vnd.github+json
+#
+# Body examples:
+#   {"ref":"main","inputs":{"ticker":"defaults"}}
+#   {"ref":"main","inputs":{"ticker":"AAPL","start":"2020-01-01"}}
+#   {"ref":"main","inputs":{"ticker":"ES=F","start":"2022-01-01"}}
+#   {"ref":"main","inputs":{"ticker":"BTC-USD","start":"2020-01-01"}}
+#   {"ref":"main","inputs":{"ticker":"SPY","start":"2010-01-01","interval":"1wk","fields":"all"}}
+#
+# Results are committed to the data/ folder on main and readable at:
+#   https://raw.githubusercontent.com/FUCKUWURST/yfinance-fetcher/main/data/<ticker>_prices.json
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Ticker symbol, or "defaults" for GEV+NVDA'
+        required: true
+        default: 'defaults'
+      start:
+        description: 'Start date YYYY-MM-DD (not needed when ticker=defaults)'
+        required: false
+        default: ''
+      end:
+        description: 'End date YYYY-MM-DD (default: today)'
+        required: false
+        default: ''
+      interval:
+        description: 'Bar interval: 1d | 1wk | 1mo | 1h | 15m | 5m etc.'
+        required: false
+        default: '1d'
+      fields:
+        description: 'Output fields — close: {date,close}  |  all: full OHLCV'
+        required: false
+        default: 'close'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yfinance
+        run: pip install yfinance --quiet
+
+      - name: Fetch data into data/
+        run: |
+          mkdir -p data
+          TICKER="${{ inputs.ticker }}"
+          START="${{ inputs.start }}"
+          END="${{ inputs.end }}"
+          INTERVAL="${{ inputs.interval }}"
+          FIELDS="${{ inputs.fields }}"
+
+          safe_name() {
+            echo "$1" | tr '=^' '__' | tr '[:upper:]' '[:lower:]'
+          }
+
+          if [ "$TICKER" = "defaults" ]; then
+            python fetch_stock_data.py -t GEV  -s 2024-04-02 -o data/gev_prices.json
+            python fetch_stock_data.py -t NVDA -s 2019-01-01 -o data/nvda_prices.json
+          else
+            OUTFILE="data/$(safe_name "$TICKER")_prices.json"
+            ARGS="-t $TICKER -o $OUTFILE"
+            [ -n "$START" ]    && ARGS="$ARGS -s $START"
+            [ -n "$END" ]      && ARGS="$ARGS -e $END"
+            [ -n "$INTERVAL" ] && ARGS="$ARGS -i $INTERVAL"
+            [ -n "$FIELDS" ]   && ARGS="$ARGS -f $FIELDS"
+            python fetch_stock_data.py $ARGS
+          fi
+
+      - name: Commit data/ to main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No new data." && exit 0
+          git commit -m "data: ${{ inputs.ticker }} $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push

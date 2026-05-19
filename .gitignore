@@ -2,4 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+
+# Ignore locally-generated JSON (fetched ad-hoc on the Mac).
+# The data/ folder is managed by GitHub Actions and IS committed.
 *_prices.json
+!data/*_prices.json
