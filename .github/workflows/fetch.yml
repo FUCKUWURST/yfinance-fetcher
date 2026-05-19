@@ -1,20 +1,5 @@
 name: Fetch Stock Data
 
-# Triggered via the GitHub REST API — no Mac required, works from any network.
-#
-# POST https://api.github.com/repos/FUCKUWURST/yfinance-fetcher/actions/workflows/fetch.yml/dispatches
-# Headers: Authorization: Bearer <PAT>  |  Accept: application/vnd.github+json
-#
-# Body examples:
-#   {"ref":"main","inputs":{"ticker":"defaults"}}
-#   {"ref":"main","inputs":{"ticker":"AAPL","start":"2020-01-01"}}
-#   {"ref":"main","inputs":{"ticker":"ES=F","start":"2022-01-01"}}
-#   {"ref":"main","inputs":{"ticker":"BTC-USD","start":"2020-01-01"}}
-#   {"ref":"main","inputs":{"ticker":"SPY","start":"2010-01-01","interval":"1wk","fields":"all"}}
-#
-# Results are committed to the data/ folder on main and readable at:
-#   https://raw.githubusercontent.com/FUCKUWURST/yfinance-fetcher/main/data/<ticker>_prices.json
-
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +8,7 @@ on:
         required: true
         default: 'defaults'
       start:
-        description: 'Start date YYYY-MM-DD (not needed when ticker=defaults)'
+        description: 'Start date YYYY-MM-DD'
         required: false
         default: ''
       end:
@@ -31,13 +16,16 @@ on:
         required: false
         default: ''
       interval:
-        description: 'Bar interval: 1d | 1wk | 1mo | 1h | 15m | 5m etc.'
+        description: 'Bar interval: 1d | 1wk | 1mo | 1h | 15m | 5m'
         required: false
         default: '1d'
       fields:
-        description: 'Output fields — close: {date,close}  |  all: full OHLCV'
+        description: 'close | all'
         required: false
         default: 'close'
+  push:
+    paths:
+      - 'requests.txt'
 
 permissions:
   contents: write
@@ -45,7 +33,6 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,37 +45,46 @@ jobs:
       - name: Install yfinance
         run: pip install yfinance --quiet
 
-      - name: Fetch data into data/
+      - name: Fetch data
         run: |
           mkdir -p data
-          TICKER="${{ inputs.ticker }}"
-          START="${{ inputs.start }}"
-          END="${{ inputs.end }}"
-          INTERVAL="${{ inputs.interval }}"
-          FIELDS="${{ inputs.fields }}"
+          safe_name() { echo "$1" | tr '=^' '__' | tr '[:upper:]' '[:lower:]'; }
 
-          safe_name() {
-            echo "$1" | tr '=^' '__' | tr '[:upper:]' '[:lower:]'
-          }
-
-          if [ "$TICKER" = "defaults" ]; then
-            python fetch_stock_data.py -t GEV  -s 2024-04-02 -o data/gev_prices.json
-            python fetch_stock_data.py -t NVDA -s 2019-01-01 -o data/nvda_prices.json
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "=== Batch mode: reading requests.txt ==="
+            while IFS= read -r line || [ -n "$line" ]; do
+              [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+              TICKER=$(echo "$line" | awk '{print $1}')
+              START=$(echo "$line" | awk '{print $2}')
+              OUTFILE="data/$(safe_name "$TICKER")_prices.json"
+              echo "Fetching $TICKER from $START → $OUTFILE"
+              python fetch_stock_data.py -t "$TICKER" -s "$START" -o "$OUTFILE" || echo "WARN: $TICKER failed"
+            done < requests.txt
           else
-            OUTFILE="data/$(safe_name "$TICKER")_prices.json"
-            ARGS="-t $TICKER -o $OUTFILE"
-            [ -n "$START" ]    && ARGS="$ARGS -s $START"
-            [ -n "$END" ]      && ARGS="$ARGS -e $END"
-            [ -n "$INTERVAL" ] && ARGS="$ARGS -i $INTERVAL"
-            [ -n "$FIELDS" ]   && ARGS="$ARGS -f $FIELDS"
-            python fetch_stock_data.py $ARGS
+            TICKER="${{ inputs.ticker }}"
+            START="${{ inputs.start }}"
+            END="${{ inputs.end }}"
+            INTERVAL="${{ inputs.interval }}"
+            FIELDS="${{ inputs.fields }}"
+            if [ "$TICKER" = "defaults" ]; then
+              python fetch_stock_data.py -t GEV  -s 2024-04-02 -o data/gev_prices.json
+              python fetch_stock_data.py -t NVDA -s 2019-01-01 -o data/nvda_prices.json
+            else
+              OUTFILE="data/$(safe_name "$TICKER")_prices.json"
+              ARGS="-t $TICKER -o $OUTFILE"
+              [ -n "$START" ]    && ARGS="$ARGS -s $START"
+              [ -n "$END" ]      && ARGS="$ARGS -e $END"
+              [ -n "$INTERVAL" ] && ARGS="$ARGS -i $INTERVAL"
+              [ -n "$FIELDS" ]   && ARGS="$ARGS -f $FIELDS"
+              python fetch_stock_data.py $ARGS
+            fi
           fi
 
-      - name: Commit data/ to main
+      - name: Commit results
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
           git diff --staged --quiet && echo "No new data." && exit 0
-          git commit -m "data: ${{ inputs.ticker }} $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git commit -m "data: batch fetch $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push
