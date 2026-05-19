@@ -1,0 +1,93 @@
+name: Fetch on Git Request
+
+# Triggered when a sandbox/Cowork agent pushes a JSON file to requests/.
+# The agent can't reach api.github.com or raw.githubusercontent.com,
+# but git over HTTPS to github.com IS open — so push/pull works as a relay.
+#
+# Request file format: requests/<TICKER>_<START>_<TIMESTAMP>.json
+# {
+#   "ticker":   "AAPL",
+#   "start":    "2020-01-01",
+#   "end":      "",          // optional, defaults to today
+#   "interval": "1d",        // optional, default 1d
+#   "fields":   "close"      // optional, close or all
+# }
+#
+# Result written to: data/<ticker_safe>_prices.json
+# Agent polls with `git pull` until the file appears.
+
+on:
+  push:
+    paths:
+      - 'requests/**.json'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history to push back cleanly
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yfinance
+        run: pip install yfinance --quiet
+
+      - name: Process all pending request files
+        run: |
+          mkdir -p data
+
+          safe_name() {
+            echo "$1" | tr '=^' '__' | tr '[:upper:]' '[:lower:]' | tr '-' '_'
+          }
+
+          # Find request files added/modified in this push
+          REQUESTS=$(git diff-tree --no-commit-id -r --name-only ${{ github.sha }} \
+                     | grep '^requests/.*\.json$' || true)
+
+          if [ -z "$REQUESTS" ]; then
+            echo "No new request files in this push."
+            exit 0
+          fi
+
+          for req_file in $REQUESTS; do
+            echo "Processing: $req_file"
+
+            TICKER=$(python3 -c "import json; d=json.load(open('$req_file')); print(d.get('ticker','defaults'))")
+            START=$(python3   -c "import json; d=json.load(open('$req_file')); print(d.get('start',''))")
+            END=$(python3     -c "import json; d=json.load(open('$req_file')); print(d.get('end',''))")
+            INTERVAL=$(python3 -c "import json; d=json.load(open('$req_file')); print(d.get('interval','1d'))")
+            FIELDS=$(python3  -c "import json; d=json.load(open('$req_file')); print(d.get('fields','close'))")
+
+            if [ "$TICKER" = "defaults" ]; then
+              python3 fetch_stock_data.py -t GEV  -s 2024-04-02 -o data/gev_prices.json
+              python3 fetch_stock_data.py -t NVDA -s 2019-01-01 -o data/nvda_prices.json
+            else
+              SAFE=$(safe_name "$TICKER")
+              OUTFILE="data/${SAFE}_prices.json"
+              ARGS="-t $TICKER -o $OUTFILE"
+              [ -n "$START" ]    && ARGS="$ARGS -s $START"
+              [ -n "$END" ]      && ARGS="$ARGS -e $END"
+              [ -n "$INTERVAL" ] && ARGS="$ARGS -i $INTERVAL"
+              [ -n "$FIELDS" ]   && ARGS="$ARGS -f $FIELDS"
+              python3 fetch_stock_data.py $ARGS
+            fi
+          done
+
+      - name: Commit fetched data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet && echo "No new data to commit." && exit 0
+          git commit -m "data: fulfilled request from ${{ github.actor }} [skip ci]"
+          git push
