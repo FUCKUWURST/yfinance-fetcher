@@ -27,7 +27,7 @@
 
 set -euo pipefail
 
-REPO="FUCKUWURST/yfinance-fetcher"
+REPO="Glenn-So-JH/yfinance-fetcher"
 API="https://api.github.com"
 RAW="https://raw.githubusercontent.com/${REPO}/main/data"
 
